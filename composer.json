@@ -1,6 +1,6 @@
 {
-    "name": "guillebalmacedaonline/afip.php",
-    "description": "Cliente AFIP para PHP",
+    "name": "guillebalmacedaonline/arcasdk",
+    "description": "Cliente ARCA para PHP",
     "license": "MIT",
     "keywords": ["afip","facturacion-electronica","gratis","soap","cae","padron","contribuyente","libreria"],
     "type": "library",
