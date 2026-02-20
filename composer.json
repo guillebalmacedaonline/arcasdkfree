@@ -1,16 +1,21 @@
 {
     "name": "guillebalmacedaonline/arcasdk",
-    "description": "Cliente ARCA para PHP",
-    "license": "MIT",
-    "keywords": ["afip","facturacion-electronica","gratis","soap","cae","padron","contribuyente","libreria"],
     "type": "library",
-    "autoload": {
-      "psr-4": {
-        "Afip\\": "src/"
-      }
-    },
+    "description": "Cliente ARCA para PHP",
+    "keywords": ["afip","arca","facturacion-electronica","gratis","soap","cae","padron","contribuyente","libreria"],
+    "homepage": "https://uniting.com.ar",
+    "license": "MIT",
     "require": {
-      "php": ">=7.2"
+        "php": ">=5.3.3"
+    },
+    "authors": [
+        {
+            "name": "",
+            "email": ""
+        }
+    ],
+    "autoload": {
+        "files": [ "src/Afip.php" ]
     }
-  }
+}
   
