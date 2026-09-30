@@ -222,7 +222,31 @@ class ElectronicBilling extends AfipWebService {
 	}
 
 	/**
-	 * Asks to AFIP Servers for currencies availables {@see WS 
+	 * Asks to AFIP Servers for receiver VAT conditions availables
+	 * (RG ARCA 5616, FEParamGetCondicionIvaReceptor)
+	 *
+	 * @since 7.1
+	 *
+	 * @param string|null $claseCmp Voucher class to filter by (A, B, C, M),
+	 * 	if is NULL returns all of them
+	 *
+	 * @return array All receiver VAT conditions availables
+	 * 	[Id, Desc, Cmp_Clase]
+	**/
+	public function GetCondicionIvaReceptorTypes($claseCmp = NULL)
+	{
+		$req = array();
+
+		if ($claseCmp !== NULL)
+			$req['ClaseCmp'] = $claseCmp;
+
+		$res = $this->ExecuteRequest('FEParamGetCondicionIvaReceptor', $req)->ResultGet->CondicionIvaReceptor;
+
+		return is_array($res) ? $res : array($res);
+	}
+
+	/**
+	 * Asks to AFIP Servers for currencies availables {@see WS
 	 * Specification item 4.8}
 	 *
 	 * @since 0.7
