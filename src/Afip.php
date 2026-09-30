@@ -13,7 +13,15 @@
  * @version 0.5
  **/
 
+#[\AllowDynamicProperties]
 class Afip {
+	/**
+	 * Options received in the constructor
+	 *
+	 * @var array
+	 **/
+	var $options;
+
 	/**
 	 * File name for the WSDL corresponding to WSAA
 	 *
@@ -145,6 +153,83 @@ class Afip {
 	}
 
 	/**
+	 * Gets the SOAP timeout (seconds) configured with the 'soap_timeout'
+	 * option
+	 *
+	 * @since 7.1
+	 *
+	 * @return int|null Seconds, or NULL if the option is not set
+	**/
+	public function GetSoapTimeout()
+	{
+		if (isset($this->options['soap_timeout']) && $this->options['soap_timeout'] > 0)
+			return (int) ceil($this->options['soap_timeout']);
+
+		return NULL;
+	}
+
+	/**
+	 * Adds the 'soap_timeout' option (if any) to SoapClient options
+	 *
+	 * @since 7.1
+	 *
+	 * @param array $soap_options 		SoapClient options
+	 * @param array $context_options 	stream_context options, by wrapper
+	 *
+	 * @return array SoapClient options
+	**/
+	public function ApplySoapTimeout($soap_options, $context_options = array())
+	{
+		$timeout = $this->GetSoapTimeout();
+
+		if ($timeout !== NULL) {
+			$soap_options['connection_timeout'] = $timeout;
+			$context_options['http'] = array('timeout' => $timeout);
+		}
+
+		if (!empty($context_options))
+			$soap_options['stream_context'] = stream_context_create($context_options);
+
+		return $soap_options;
+	}
+
+	/**
+	 * Sets default_socket_timeout (the one ext/soap uses to read the
+	 * response) to 'soap_timeout' and returns the previous value
+	 *
+	 * @since 7.1
+	 *
+	 * @return string|null Previous value to restore, or NULL if there is
+	 * 	nothing to restore
+	**/
+	public function SetSocketTimeout()
+	{
+		$timeout = $this->GetSoapTimeout();
+
+		if ($timeout === NULL)
+			return NULL;
+
+		$previous = ini_set('default_socket_timeout', (string) $timeout);
+
+		return $previous === FALSE ? NULL : $previous;
+	}
+
+	/**
+	 * Restores default_socket_timeout
+	 *
+	 * @since 7.1
+	 *
+	 * @param string|null $previous Value returned by Afip::SetSocketTimeout
+	 *
+	 * @return void
+	**/
+	public function RestoreSocketTimeout($previous)
+	{
+		if ($previous !== NULL)
+			ini_set('default_socket_timeout', $previous);
+	}
+
+	/**
 	 * Gets token authorization for an AFIP Web Service
 	 *
 	 * @since 0.1
@@ -220,13 +305,15 @@ class Afip {
 		unlink($this->TA_FOLDER."TRA-".$this->options['CUIT'].'-'.$service.".tmp");
 
 		//Request TA to WSAA
-		$client = new SoapClient($this->WSAA_WSDL, array(
+		$client = new SoapClient($this->WSAA_WSDL, $this->ApplySoapTimeout(array(
 		'soap_version'   => SOAP_1_2,
 		'location'       => $this->WSAA_URL,
 		'trace'          => 1,
 		'exceptions'     => 0
-		)); 
+		)));
+		$previous_timeout = $this->SetSocketTimeout();
 		$results=$client->loginCms(array('in0'=>$CMS));
+		$this->RestoreSocketTimeout($previous_timeout);
 		if (is_soap_fault($results)) 
 			throw new Exception("SOAP Fault: ".$results->faultcode."\n".$results->faultstring."\n", 4);
 
@@ -340,7 +427,14 @@ class AfipWebService
 	 * @var Afip
 	 **/
 	var $afip;
-	
+
+	/**
+	 * SOAP client, created on the first request
+	 *
+	 * @var SoapClient
+	 **/
+	var $soap_client;
+
 	function __construct($afip)
 	{
 		$this->afip = $afip;
@@ -369,26 +463,36 @@ class AfipWebService
 	public function ExecuteRequest($operation, $params = array())
 	{
 		if (!isset($this->soap_client)) {
-			$options = [
+			$cafile = isset($this->afip->options['cafile']) ? $this->afip->options['cafile'] : '/etc/ssl/certs/ca-certificates.crt';
+
+			$options = $this->afip->ApplySoapTimeout([
                 'soap_version' 	=> $this->soap_version,
                 'location' 		=> $this->URL,
                 'trace' => 1,
                 'exceptions' => true,
                 'cache_wsdl' => WSDL_CACHE_NONE,
-                'stream_context' => stream_context_create([
-                    'ssl' => [
-                        'ciphers' => 'DEFAULT:@SECLEVEL=1',
-                        'cafile' => '/etc/ssl/certs/ca-certificates.crt',
-                        'verify_peer' => true,
-                        'verify_peer_name' => true,
-                    ]
-                ])
-            ];
+            ], [
+                'ssl' => [
+                    'ciphers' => 'DEFAULT:@SECLEVEL=1',
+                    'cafile' => $cafile,
+                    'verify_peer' => true,
+                    'verify_peer_name' => true,
+                ]
+            ]);
 
 			$this->soap_client = new SoapClient($this->WSDL, $options);
 		}
 
-		$results = $this->soap_client->{$operation}($params);
+		$previous_timeout = $this->afip->SetSocketTimeout();
+
+		try {
+			$results = $this->soap_client->{$operation}($params);
+		} catch (Exception $e) {
+			$this->afip->RestoreSocketTimeout($previous_timeout);
+			throw $e;
+		}
+
+		$this->afip->RestoreSocketTimeout($previous_timeout);
 
 		$this->_CheckErrors($operation, $results);
 
