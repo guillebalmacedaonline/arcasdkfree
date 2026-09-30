@@ -83,7 +83,11 @@ class ElectronicBilling extends AfipWebService {
 		if (isset($data['Tributos'])) 
 			$data['Tributos'] = array('Tributo' => $data['Tributos']);
 
-		if (isset($data['Iva'])) 
+		// Wrap only if it is not already wrapped: ['CbtesAsoc' => ['CbteAsoc' => [...]]]
+		if (isset($data['CbtesAsoc']) && !(is_array($data['CbtesAsoc']) && array_key_exists('CbteAsoc', $data['CbtesAsoc'])))
+			$data['CbtesAsoc'] = array('CbteAsoc' => $data['CbtesAsoc']);
+
+		if (isset($data['Iva']))
 			$data['Iva'] = array('AlicIva' => $data['Iva']);
 
 		if (isset($data['Opcionales'])) 
