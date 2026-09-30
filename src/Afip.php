@@ -242,20 +242,74 @@ class Afip {
 	**/
 	public function GetServiceTA($service, $continue = TRUE)
 	{
-		if (file_exists($this->TA_FOLDER.'TA-'.$this->options['CUIT'].'-'.$service.($this->options['production'] === TRUE ? '-production' : '').'.xml')) {
-			$TA = new SimpleXMLElement(file_get_contents($this->TA_FOLDER.'TA-'.$this->options['CUIT'].'-'.$service.($this->options['production'] === TRUE ? '-production' : '').'.xml'));
+		$ta = $this->ReadServiceTA($service);
 
-			$actual_time 		= new DateTime(date('c',date('U')+600));
-			$expiration_time 	= new DateTime($TA->header->expirationTime);
+		if ($ta !== NULL)
+			return $ta;
+		else if ($continue === FALSE)
+			throw new Exception("Error Getting TA", 5);
 
-			if ($actual_time < $expiration_time) 
-				return new TokenAutorization($TA->credentials->token, $TA->credentials->sign);
-			else if ($continue === FALSE)
-				throw new Exception("Error Getting TA", 5);
+		if ($this->CreateServiceTA($service))
+			return $this->GetServiceTA($service, FALSE);
+	}
+
+	/**
+	 * Gets the key that identifies the TA of a service. It is the name of
+	 * the file (without extension) in ta_folder, and the key that is passed
+	 * to the 'ta_get' and 'ta_put' callbacks
+	 *
+	 * @since 7.1
+	 *
+	 * @param string $service Service for token authorization
+	 *
+	 * @return string
+	**/
+	private function GetServiceTAKey($service)
+	{
+		return 'TA-'.$this->options['CUIT'].'-'.$service.($this->options['production'] === TRUE ? '-production' : '');
+	}
+
+	/**
+	 * Reads the stored TA of a service
+	 *
+	 * The TA is read from the 'ta_get' callback if it is set in options
+	 * (receives the TA key, returns the TA xml or NULL/FALSE if it does not
+	 * exist), if not, from a xml file in ta_folder
+	 *
+	 * @since 7.1
+	 *
+	 * @param string $service Service for token authorization
+	 *
+	 * @return TokenAutorization|null NULL if there is not a TA or if it is
+	 * 	expired (or expires in less than 10 minutes)
+	**/
+	private function ReadServiceTA($service)
+	{
+		$key = $this->GetServiceTAKey($service);
+
+		if (isset($this->options['ta_get']) && is_callable($this->options['ta_get'])) {
+			$xml = call_user_func($this->options['ta_get'], $key);
+		} else {
+			$file = $this->TA_FOLDER.$key.'.xml';
+			$xml = file_exists($file) ? @file_get_contents($file) : FALSE;
 		}
 
-		if ($this->CreateServiceTA($service)) 
-			return $this->GetServiceTA($service, FALSE);
+		if (!is_string($xml) || $xml === '')
+			return NULL;
+
+		try {
+			$TA = new SimpleXMLElement($xml);
+
+			$actual_time 		= new DateTime(date('c',date('U')+600));
+			$expiration_time 	= new DateTime((string) $TA->header->expirationTime);
+		} catch (Exception $e) {
+			return NULL;
+		}
+
+		if ($actual_time < $expiration_time)
+			return new TokenAutorization($TA->credentials->token, $TA->credentials->sign);
+
+		return NULL;
 	}
 
 	/**
@@ -274,7 +328,51 @@ class Afip {
 	**/
 	private function CreateServiceTA($service)
 	{
-		//Creating TRA
+		// Only one process at a time renews the TA of a CUIT and service,
+		// WSAA rejects a second request if there is already a valid TA
+		$lock = @fopen($this->TA_FOLDER.$this->GetServiceTAKey($service).'.lock', 'c');
+
+		if ($lock !== FALSE)
+			flock($lock, LOCK_EX);
+
+		try {
+			// Other process could have renewed it while we were waiting
+			if ($lock !== FALSE && $this->ReadServiceTA($service) !== NULL)
+				$result = TRUE;
+			else
+				$result = $this->RequestServiceTA($service);
+		} catch (Exception $e) {
+			if ($lock !== FALSE) {
+				flock($lock, LOCK_UN);
+				fclose($lock);
+			}
+
+			throw $e;
+		}
+
+		if ($lock !== FALSE) {
+			flock($lock, LOCK_UN);
+			fclose($lock);
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Request a TA to WSAA and store it
+	 *
+	 * @since 7.1
+	 *
+	 * @param string $service Service for token authorization
+	 *
+	 * @throws Exception if an error occurs creating token authorization
+	 *
+	 * @return bool true if token authorization is created success
+	**/
+	private function RequestServiceTA($service)
+	{
+		//Creating TRA (with unique temporary files, TRA-CUIT-service names
+		//would be overwritten by concurrent requests)
 		$TRA = new SimpleXMLElement(
 		'<?xml version="1.0" encoding="UTF-8"?>' .
 		'<loginTicketRequest version="1.0">'.
@@ -284,16 +382,22 @@ class Afip {
 		$TRA->header->addChild('generationTime',date('c',date('U')-600));
 		$TRA->header->addChild('expirationTime',date('c',date('U')+600));
 		$TRA->addChild('service',$service);
-		$TRA->asXML($this->TA_FOLDER.'TRA-'.$this->options['CUIT'].'-'.$service.'.xml');
+		$tra_file = tempnam($this->TA_FOLDER, 'TRA-'.$this->options['CUIT'].'-'.$service.'-');
+		$cms_file = tempnam($this->TA_FOLDER, 'TRA-'.$this->options['CUIT'].'-'.$service.'-');
+		$TRA->asXML($tra_file);
 
 		//Signing TRA
-		$STATUS = openssl_pkcs7_sign($this->TA_FOLDER."TRA-".$this->options['CUIT'].'-'.$service.".xml", $this->TA_FOLDER."TRA-".$this->options['CUIT'].'-'.$service.".tmp", "file://".$this->CERT,
+		$STATUS = openssl_pkcs7_sign($tra_file, $cms_file, "file://".$this->CERT,
 			array("file://".$this->PRIVATEKEY, $this->PASSPHRASE),
 			array(),
 			!PKCS7_DETACHED
 		);
-		if (!$STATUS) {return FALSE;}
-		$inf = fopen($this->TA_FOLDER."TRA-".$this->options['CUIT'].'-'.$service.".tmp", "r");
+		if (!$STATUS) {
+			@unlink($tra_file);
+			@unlink($cms_file);
+			return FALSE;
+		}
+		$inf = fopen($cms_file, "r");
 		$i = 0;
 		$CMS="";
 		while (!feof($inf)) {
@@ -301,8 +405,8 @@ class Afip {
 			if ( $i++ >= 4 ) {$CMS.=$buffer;}
 		}
 		fclose($inf);
-		unlink($this->TA_FOLDER."TRA-".$this->options['CUIT'].'-'.$service.".xml");
-		unlink($this->TA_FOLDER."TRA-".$this->options['CUIT'].'-'.$service.".tmp");
+		@unlink($tra_file);
+		@unlink($cms_file);
 
 		//Request TA to WSAA
 		$client = new SoapClient($this->WSAA_WSDL, $this->ApplySoapTimeout(array(
@@ -319,7 +423,28 @@ class Afip {
 
 		$TA = $results->loginCmsReturn;
 
-		if (file_put_contents($this->TA_FOLDER.'TA-'.$this->options['CUIT'].'-'.$service.($this->options['production'] === TRUE ? '-production' : '').'.xml', $TA)) 
+		$key = $this->GetServiceTAKey($service);
+
+		if (isset($this->options['ta_put']) && is_callable($this->options['ta_put'])) {
+			call_user_func($this->options['ta_put'], $key, $TA);
+
+			return TRUE;
+		}
+
+		// Atomic write: other processes read the TA without lock
+		$file 	= $this->TA_FOLDER.$key.'.xml';
+		$tmp 	= tempnam($this->TA_FOLDER, $key.'-');
+
+		if ($tmp !== FALSE && file_put_contents($tmp, $TA)) {
+			@chmod($tmp, 0666 & ~umask());
+
+			if (@rename($tmp, $file))
+				return TRUE;
+
+			@unlink($tmp);
+		}
+
+		if (file_put_contents($file, $TA))
 			return TRUE;
 		else
 			throw new Exception('Error writing "TA-'.$this->options['CUIT'].'-'.$service.'.xml"', 5);
