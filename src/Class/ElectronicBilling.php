@@ -58,7 +58,8 @@ class ElectronicBilling extends AfipWebService {
 	 * 
 	 * @return array if $return_response is set to FALSE returns 
 	 * 	[CAE => CAE assigned to voucher, CAEFchVto => Expiration date 
-	 * 	for CAE (yyyy-mm-dd)] else returns complete response from 
+	 * 	for CAE (yyyy-mm-dd), Observaciones => array of [Code, Msg] (empty
+	 * 	if there are none)] else returns complete response from 
 	 * 	AFIP {@see WS Specification item 4.1.3}
 	**/
 	public function CreateVoucher($data, $return_response = FALSE)
@@ -99,9 +100,20 @@ class ElectronicBilling extends AfipWebService {
 			return $results;
 		}
 		else{
+			$observations = array();
+
+			if (isset($results->FeDetResp->FECAEDetResponse->Observaciones->Obs)) {
+				$obs = $results->FeDetResp->FECAEDetResponse->Observaciones->Obs;
+
+				foreach (is_array($obs) ? $obs : array($obs) as $o) {
+					$observations[] = array('Code' => $o->Code, 'Msg' => $o->Msg);
+				}
+			}
+
 			return array(
-				'CAE' 		=> $results->FeDetResp->FECAEDetResponse->CAE,
-				'CAEFchVto' => $this->FormatDate($results->FeDetResp->FECAEDetResponse->CAEFchVto),
+				'CAE' 			=> $results->FeDetResp->FECAEDetResponse->CAE,
+				'CAEFchVto' 	=> $this->FormatDate($results->FeDetResp->FECAEDetResponse->CAEFchVto),
+				'Observaciones' => $observations,
 			);
 		}
 	}
